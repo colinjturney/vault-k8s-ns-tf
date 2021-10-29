@@ -1,0 +1,104 @@
+apiVersion: v1
+kind: ConfigMap
+data:
+  nginx.conf: |
+    server {
+            listen 80 default_server;
+
+            root /usr/share/nginx/html;
+            index index.html;
+
+            server_name my-website.com;
+
+            location / {
+                    try_files $uri $uri/ =404;
+            }
+    }
+metadata:
+  name: nginxconfigmap
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-agent-lewisapp
+  labels:
+    run: vault-agent-lewisapp
+spec:
+  type: NodePort
+  selector:
+    run: vault-agent-lewisapp
+  ports:
+    - port: 80
+      targetPort: 80
+      # Optional field
+      # By default and for convenience, the Kubernetes control plane will allocate a port from a range (default: 30000-32767)
+      nodePort: 32090
+      name: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vault-agent-lewisapp
+spec:
+  selector:
+    matchLabels:
+      run: vault-agent-lewisapp
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        run: vault-agent-lewisapp
+      annotations:
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "lewisapp-role"
+        vault.hashicorp.com/tls-skip-verify: "true"
+        vault.hashicorp.com/agent-run-as-same-user: "true"
+        vault.hashicorp.com/agent-set-security-context: "true"
+        vault.hashicorp.com/agent-cache-enable: "true"
+        vault.hashicorp.com/namespace: "customer-success"
+        # Static secret as index.html
+        vault.hashicorp.com/secret-volume-path-cs.html: "/usr/share/nginx/html"
+        vault.hashicorp.com/agent-inject-secret-cs.html: "secret/customer-success"
+        vault.hashicorp.com/agent-inject-template-cs.html: |
+          {{- with secret "secret/customer-success" -}}
+          {{ .Data.value }}
+          {{- end }}
+        # Static secret as csa.html
+        vault.hashicorp.com/secret-volume-path-csa.html: "/usr/share/nginx/html"
+        vault.hashicorp.com/agent-inject-secret-csa.html: "csa/secret/csa-team-secret"
+        vault.hashicorp.com/agent-inject-template-csa.html: |
+          {{- with secret "csa/secret/csa-team-secret" -}}
+          {{ .Data.value }}
+          {{- end }}
+        # Static secret as lewisapp.html
+        vault.hashicorp.com/secret-volume-path-lewisapp.html: "/usr/share/nginx/html"
+        vault.hashicorp.com/agent-inject-secret-lewisapp.html: "csa/secret/csa-app-secrets/lewisapp"
+        vault.hashicorp.com/agent-inject-template-lewisapp.html: |
+          {{- with secret "csa/secret/csa-app-secrets/lewisapp" -}}
+          {{ .Data.value }}
+          {{- end }}
+    spec:
+      volumes:
+      - name: configmap-volume
+        configMap:
+          name: nginxconfigmap
+      containers:
+      - name: nginx
+        image: nginxinc/nginx-unprivileged
+        securityContext:
+          runAsUser: 1000570000
+          runAsGroup: 1000
+        ports:
+          - containerPort: 8080
+        livenessProbe:
+          httpGet:
+            path: /index.html
+            port: 8080
+          initialDelaySeconds: 30
+          timeoutSeconds: 1
+        volumeMounts:
+        - mountPath: /etc/nginx/conf.d
+          name: configmap-volume
+      shareProcessNamespace: true
+      serviceAccountName: vault-agent-auth-lewisapp
+---
